@@ -1,0 +1,82 @@
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+localhost:8080 {
+	route {
+		turso {
+			db_path test.db
+			log_requests on
+			slow_query 50ms
+			checkpoint 1m
+
+			schema `
+				CREATE TABLE IF NOT EXISTS users (
+					id INTEGER PRIMARY KEY,
+					name TEXT NOT NULL,
+					email TEXT NOT NULL UNIQUE,
+					created_at TEXT NOT NULL DEFAULT (datetime('now'))
+				)
+			`
+
+			query list_users {
+				sql "SELECT id, name, email FROM users ORDER BY id LIMIT $limit"
+				param $limit {
+					from query
+					key limit
+					type int
+					default 50
+					max 500
+				}
+				cache 5s
+				output {
+					envelope
+				}
+			}
+
+			query get_user {
+				sql "SELECT id, name, email FROM users WHERE id = $id"
+				param $id {
+					from path
+					key id
+					type int
+				}
+			}
+
+			query create_user {
+				sql "INSERT INTO users (name, email) VALUES ($name, $email) RETURNING id, name, email"
+				param $name {
+					from body
+					key name
+				}
+				param $email {
+					from body
+					key email
+				}
+				output {
+					status 201
+					envelope
+				}
+			}
+
+			query delete_user {
+				sql "DELETE FROM users WHERE id = $id"
+				param $id {
+					from path
+					key id
+					type int
+				}
+				output {
+					status 204
+				}
+			}
+
+			route GET    /api/users         list_users
+			route GET    /api/users/:id     get_user
+			route POST   /api/users         create_user
+			route DELETE /api/users/:id     delete_user
+		}
+		file_server
+	}
+}

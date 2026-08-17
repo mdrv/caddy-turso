@@ -1,0 +1,136 @@
+# Traffic analytics: an in-memory database (with DSN options), event
+# ingestion, and dashboards built on the built-in _requests table.
+#
+# Demonstrates: ":memory:" + DSN query params, sql_file queries, env
+# params, exclude_path, and log-writer tuning incl. overflow block.
+#
+# Run from this directory (sql_file paths are relative to caddy's cwd):
+#   ../../caddy-turso run --config Caddyfile --adapter caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+localhost:8080 {
+	route {
+		turso {
+			# in-memory with DSN options; resets on restart
+			db_path ":memory:?_busy_timeout=10000"
+
+			schema `
+				CREATE TABLE IF NOT EXISTS events (
+					id         INTEGER PRIMARY KEY,
+					kind       TEXT NOT NULL,
+					path       TEXT NOT NULL,
+					note       TEXT,
+					created_at TEXT NOT NULL
+				)
+			`
+
+			query record_event {
+				sql "INSERT INTO events (kind, path, note, created_at) VALUES ($kind, $path, $note, datetime('now')) RETURNING id, created_at"
+				param $kind {
+					from body
+					key kind
+					pattern ^(click|view|error)$
+				}
+				param $path {
+					from body
+					key path
+				}
+				param $note {
+					from body
+					key note
+					default ""
+				}
+				output {
+					status 201
+					envelope
+				}
+			}
+
+			# SQL kept in a separate file
+			query top_paths {
+				sql_file top_paths.sql
+				param $limit {
+					from query
+					key limit
+					type int
+					default 10
+					min 1
+					max 100
+				}
+				output {
+					envelope
+				}
+			}
+
+			query slow_requests {
+				sql_file slow_requests.sql
+				param $min_ms {
+					from query
+					key min_ms
+					type int
+					default 100
+					min 0
+				}
+				param $limit {
+					from query
+					key limit
+					type int
+					default 10
+					min 1
+					max 100
+				}
+				output {
+					envelope
+				}
+			}
+
+			query recent_events {
+				sql "SELECT id, kind, path, note, created_at FROM events ORDER BY id DESC LIMIT $limit"
+				param $limit {
+					from query
+					key limit
+					type int
+					default 10
+					min 1
+					max 100
+				}
+				output {
+					envelope
+				}
+			}
+
+			route POST /e record_event
+			route GET /stats/top top_paths
+			route GET /stats/slow slow_requests
+			route GET /events recent_events
+
+			# every request (except the API and probes) lands in _requests;
+			# backpressure waits instead of dropping when the buffer fills
+			log_requests
+			exclude_path /_turso*
+			exclude_path /healthz*
+			batch_size 200
+			flush_interval 500ms
+			buffer_size 2048
+			overflow block
+
+			slow_query 50ms
+			api_token change-me
+		}
+
+		# the demo dashboard (only the exact root path). try_files makes the
+		# page work whether caddy is started from this directory or from the
+		# repo root.
+		handle / {
+			root * .
+			try_files examples/request-logging/index.html index.html
+			file_server
+		}
+
+		respond "ok" 200
+	}
+}

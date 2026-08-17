@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang='en'>
+	<head>
+		<meta charset='utf-8'>
+		<meta name='viewport' content='width=device-width, initial-scale=1'>
+		<title>Tasks — caddy-turso</title>
+		<style>
+		:root {
+			color-scheme: light dark;
+		}
+		body {
+			font: 15px/1.5 system-ui, sans-serif;
+			margin: 0 auto;
+			max-width: 860px;
+			padding: 1.5rem 1rem 4rem;
+		}
+		h1 {
+			font-size: 1.4rem;
+			margin: 0 0 0.25rem;
+		}
+		h1 span {
+			font-weight: 400;
+			opacity: 0.6;
+			font-size: 0.9rem;
+		}
+		.stats {
+			display: flex;
+			gap: 1.25rem;
+			opacity: 0.85;
+			margin-bottom: 1rem;
+			flex-wrap: wrap;
+		}
+		.stats b {
+			font-size: 1.15rem;
+		}
+		form {
+			display: flex;
+			gap: 0.5rem;
+			margin: 0.75rem 0 1rem;
+			flex-wrap: wrap;
+		}
+		input, select, button {
+			font: inherit;
+			padding: 0.35rem 0.6rem;
+			border: 1px solid #8888;
+			border-radius: 6px;
+			background: transparent;
+			color: inherit;
+		}
+		input[name="title"] {
+			flex: 1;
+			min-width: 14rem;
+		}
+		button {
+			cursor: pointer;
+		}
+		button:hover {
+			background: #8883;
+		}
+		.filters {
+			display: flex;
+			gap: 0.35rem;
+			margin-bottom: 0.5rem;
+			flex-wrap: wrap;
+		}
+		.filters button[aria-pressed="true"] {
+			background: #6b9fd8;
+			border-color: #6b9fd8;
+			color: #fff;
+		}
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+		th, td {
+			text-align: left;
+			padding: 0.4rem 0.55rem;
+			border-bottom: 1px solid #8884;
+			vertical-align: top;
+		}
+		th {
+			font-size: 0.78rem;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			opacity: 0.7;
+		}
+		td.num {
+			font-variant-numeric: tabular-nums;
+			opacity: 0.8;
+		}
+		.badge {
+			display: inline-block;
+			padding: 0.05rem 0.5rem;
+			border-radius: 99px;
+			font-size: 0.78rem;
+			border: 1px solid currentColor;
+		}
+		.todo {
+			color: #b0793a;
+		}
+		.doing {
+			color: #4a7ecb;
+		}
+		.done {
+			color: #43915c;
+		}
+		.row-actions {
+			white-space: nowrap;
+		}
+		.row-actions button {
+			padding: 0.15rem 0.5rem;
+			font-size: 0.82rem;
+		}
+		#msg {
+			margin-top: 1rem;
+			font-size: 0.85rem;
+			opacity: 0.8;
+			min-height: 1.2em;
+		}
+		#msg.err {
+			color: #d06565;
+			opacity: 1;
+		}
+		.empty {
+			opacity: 0.6;
+			padding: 1rem 0;
+		}
+		</style>
+	</head>
+	<body>
+		<h1>Tasks <span>— caddy-turso crud-api demo</span></h1>
+		<div class='stats'>
+			<div><b id='st-total'>–</b> total</div>
+			<div><b id='st-doing'>–</b> doing</div>
+			<div><b id='st-done'>–</b> done</div>
+		</div>
+
+		<form id='add'>
+			<input
+				name='title'
+				placeholder='What needs doing?'
+				required
+				maxlength='200'
+			>
+			<select name='status'>
+				<option value='todo'>todo</option>
+				<option value='doing'>doing</option>
+				<option value='done'>done</option>
+			</select>
+			<button>Add</button>
+		</form>
+
+		<div class='filters' id='filters'>
+			<button data-s='' aria-pressed='true'>all</button>
+			<button data-s='todo' aria-pressed='false'>todo</button>
+			<button data-s='doing' aria-pressed='false'>doing</button>
+			<button data-s='done' aria-pressed='false'>done</button>
+		</div>
+
+		<table>
+			<thead>
+				<tr>
+					<th>#</th>
+					<th>title</th>
+					<th>status</th>
+					<th>created</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id='rows'></tbody>
+		</table>
+		<div class='empty' id='empty' hidden>no tasks yet — add one above</div>
+		<div id='msg'></div>
+
+		<script>
+		'use strict'
+		const $ = (s) => document.querySelector(s)
+		const esc = (s) =>
+			String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+		const NEXT = { todo: 'doing', doing: 'done', done: 'todo' }
+		let filter = ''
+
+		const msg = (t, err) => {
+			const m = $('#msg')
+			m.textContent = t
+			m.className = err ? 'err' : ''
+		}
+
+		async function api(method, url, body) {
+			const res = await fetch(url, {
+				method,
+				headers: body !== undefined
+					? { 'Content-Type': 'application/json' }
+					: undefined,
+				body: body !== undefined ? JSON.stringify(body) : undefined,
+			})
+			const text = await res.text()
+			let json = null
+			try {
+				json = JSON.parse(text)
+			} catch {}
+			if (!res.ok) {
+				throw new Error(
+					(json && json.error) || `${res.status} ${text.slice(0, 120)}`,
+				)
+			}
+			return json !== null && json !== undefined ? json : { raw: text }
+		}
+
+		async function loadStats() {
+			const r = await api('GET', '/api/stats')
+			const s = r.data[0] || {}
+			$('#st-total').textContent = s.total ?? 0
+			$('#st-doing').textContent = s.doing ?? 0
+			$('#st-done').textContent = s.done ?? 0
+		}
+
+		async function loadTasks() {
+			const q = filter ? `?status=${encodeURIComponent(filter)}` : ''
+			const r = await api('GET', '/api/tasks' + q)
+			const rows = r.data || []
+			$('#empty').hidden = rows.length > 0
+			$('#rows').innerHTML = rows.map((t) => `
+		<tr>
+			<td class="num">${t.id}</td>
+			<td>${esc(t.title)}</td>
+			<td><span class="badge ${t.status}">${t.status}</span></td>
+			<td class="num">${esc(t.created_at)}</td>
+			<td class="row-actions">
+				<button data-act="next" data-id="${t.id}" data-status="${t.status}" title="move to ${
+				NEXT[t.status]
+			}">→ ${NEXT[t.status]}</button>
+				<button data-act="del" data-id="${t.id}">✕</button>
+			</td>
+		</tr>`).join('')
+		}
+
+		async function refresh() {
+			try {
+				await Promise.all([loadStats(), loadTasks()])
+				msg('')
+			} catch (e) {
+				msg(e.message, true)
+			}
+		}
+
+		$('#add').addEventListener('submit', async (ev) => {
+			ev.preventDefault()
+			const f = ev.target
+			try {
+				await api('POST', '/api/tasks', {
+					title: f.title.value.trim(),
+					status: f.status.value,
+				})
+				f.title.value = ''
+				msg('added')
+				refresh()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		$('#filters').addEventListener('click', (ev) => {
+			const b = ev.target.closest('button[data-s]')
+			if (!b) return
+			filter = b.dataset.s
+			for (const x of $('#filters').children) {
+				x.setAttribute('aria-pressed', x === b)
+			}
+			loadTasks().catch((e) => msg(e.message, true))
+		})
+
+		$('#rows').addEventListener('click', async (ev) => {
+			const b = ev.target.closest('button[data-act]')
+			if (!b) return
+			const { act, id, status } = b.dataset
+			try {
+				if (act === 'next') {
+					await api('PUT', `/api/tasks/${id}`, { status: NEXT[status] })
+				}
+				if (act === 'del') await api('DELETE', `/api/tasks/${id}`)
+				refresh()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		refresh()
+		</script>
+	</body>
+</html>

@@ -1,0 +1,98 @@
+# Edge replica: a local Turso file CDC-synced with a remote Turso database.
+#
+# Demonstrates: sync_url / sync_token / sync_interval / sync_client,
+# credentials via environment placeholders, manual sync via
+# POST /_turso/sync, and sync stats in /_turso/stats.
+#
+# Requires a remote database (free tier works): see README.md.
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+localhost:8080 {
+	route {
+		turso {
+			# local replica file, bootstrapped from the remote on first run
+			db_path edge.db
+
+			# {env.*} placeholders are expanded at config load
+			sync_url {env.TURSO_SYNC_URL}
+			sync_token {env.TURSO_AUTH_TOKEN}
+			sync_interval 15s
+			sync_client caddy-edge-1
+
+			schema `
+				CREATE TABLE IF NOT EXISTS notes (
+					id         INTEGER PRIMARY KEY,
+					body       TEXT NOT NULL,
+					origin     TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				)
+			`
+
+			query list_notes {
+				sql "SELECT id, body, origin, created_at FROM notes ORDER BY id DESC LIMIT $limit"
+				param $limit {
+					from query
+					key limit
+					type int
+					default 50
+					min 1
+					max 200
+				}
+				output {
+					envelope
+				}
+			}
+
+			query get_note {
+				sql "SELECT id, body, origin, created_at FROM notes WHERE id = $id"
+				param $id {
+					from path
+					key id
+					type int
+					min 1
+				}
+				output {
+					envelope
+				}
+			}
+
+			query create_note {
+				sql "INSERT INTO notes (body, origin, created_at) VALUES ($body, $origin, datetime('now')) RETURNING id, body, origin, created_at"
+				param $body {
+					from body
+					key body
+				}
+				param $origin {
+					from env
+					key EDGE_NAME
+					default edge-1
+				}
+				output {
+					status 201
+					envelope
+				}
+			}
+
+			route GET /api/notes list_notes
+			route GET /api/notes/:id get_note
+			route POST /api/notes create_note
+
+			api_token change-me
+		}
+
+		# the demo UI (only the exact root path; the replica file is never served).
+		# try_files makes the page work whether caddy is started from this
+		# directory or from the repo root.
+		handle / {
+			root * .
+			try_files examples/sync/index.html index.html
+			file_server
+		}
+
+		respond "not found" 404
+	}
+}

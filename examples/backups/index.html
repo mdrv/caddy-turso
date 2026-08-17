@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang='en'>
+	<head>
+		<meta charset='utf-8'>
+		<meta name='viewport' content='width=device-width, initial-scale=1'>
+		<title>Link shortener — caddy-turso</title>
+		<style>
+		:root {
+			color-scheme: light dark;
+		}
+		body {
+			font: 15px/1.5 system-ui, sans-serif;
+			margin: 0 auto;
+			max-width: 860px;
+			padding: 1.5rem 1rem 4rem;
+		}
+		h1 {
+			font-size: 1.4rem;
+			margin: 0 0 0.25rem;
+		}
+		h1 span {
+			font-weight: 400;
+			opacity: 0.6;
+			font-size: 0.9rem;
+		}
+		h2 {
+			font-size: 1.05rem;
+			margin: 1.75rem 0 0.5rem;
+		}
+		form {
+			display: flex;
+			gap: 0.5rem;
+			margin: 0.75rem 0;
+			flex-wrap: wrap;
+		}
+		input, button {
+			font: inherit;
+			padding: 0.35rem 0.6rem;
+			border: 1px solid #8888;
+			border-radius: 6px;
+			background: transparent;
+			color: inherit;
+		}
+		input {
+			min-width: 8rem;
+		}
+		#f-url {
+			flex: 2;
+		}
+		button {
+			cursor: pointer;
+		}
+		button:hover {
+			background: #8883;
+		}
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+		th, td {
+			text-align: left;
+			padding: 0.4rem 0.55rem;
+			border-bottom: 1px solid #8884;
+			vertical-align: top;
+		}
+		th {
+			font-size: 0.78rem;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			opacity: 0.7;
+		}
+		td.num {
+			font-variant-numeric: tabular-nums;
+			opacity: 0.8;
+		}
+		code {
+			font-size: 0.9em;
+			background: #8882;
+			padding: 0.05rem 0.35rem;
+			border-radius: 4px;
+		}
+		.short {
+			text-decoration: none;
+		}
+		.row-actions button {
+			padding: 0.15rem 0.5rem;
+			font-size: 0.82rem;
+		}
+		#msg {
+			margin-top: 1rem;
+			font-size: 0.85rem;
+			opacity: 0.8;
+			min-height: 1.2em;
+		}
+		#msg.err {
+			color: #d06565;
+			opacity: 1;
+		}
+		.meta {
+			font-size: 0.85rem;
+			opacity: 0.75;
+			margin-bottom: 0.5rem;
+		}
+		.empty {
+			opacity: 0.6;
+			padding: 1rem 0;
+		}
+		</style>
+	</head>
+	<body>
+		<h1>Links <span>— caddy-turso backups demo (URL shortener)</span></h1>
+
+		<form id='add'>
+			<input
+				id='f-code'
+				placeholder='code (e.g. docs)'
+				pattern='[a-z0-9_-]{3,32}'
+			>
+			<input
+				id='f-url'
+				type='url'
+				placeholder='https://example.com/long/url'
+				required
+			>
+			<button>Shorten</button>
+		</form>
+		<p class='meta'>
+			Short URLs live at <code>/s/&lt;code&gt;</code> — they redirect by
+			returning the target URL as text; visiting one bumps its hit counter.
+		</p>
+
+		<h2>Links by popularity</h2>
+		<table>
+			<thead>
+				<tr>
+					<th>code</th>
+					<th>target</th>
+					<th class='num'>hits</th>
+					<th>created</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id='rows'></tbody>
+		</table>
+		<div class='empty' id='empty' hidden>no links yet</div>
+
+		<h2>Backups</h2>
+		<p class='meta' id='bk-meta'>—</p>
+		<button id='bk-now'>Backup now (POST /_turso/backup)</button>
+
+		<table style='margin-top: 0.75rem'>
+			<thead>
+				<tr>
+					<th>snapshot</th>
+					<th class='num'>size</th>
+					<th>modified (UTC)</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id='bks'></tbody>
+		</table>
+		<div class='empty' id='bk-empty' hidden>no backups yet</div>
+
+		<h2>
+			Recent requests <span style='font-weight: 400; opacity: 0.6'
+			>(from the _requests table)</span>
+		</h2>
+		<table>
+			<thead>
+				<tr>
+					<th>time</th>
+					<th>ip</th>
+					<th>method</th>
+					<th>path</th>
+					<th class='num'>status</th>
+					<th class='num'>ms</th>
+				</tr>
+			</thead>
+			<tbody id='reqs'></tbody>
+		</table>
+		<div id='msg'></div>
+
+		<script>
+		'use strict'
+		const $ = (s) => document.querySelector(s)
+		const esc = (s) =>
+			String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+		const TOKEN = 'change-me'
+
+		const msg = (t, err) => {
+			const m = $('#msg')
+			m.textContent = t
+			m.className = err ? 'err' : ''
+		}
+
+		async function api(method, url, body, auth) {
+			const res = await fetch(url, {
+				method,
+				headers: {
+					...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+					...(auth ? { Authorization: `Bearer ${TOKEN}` } : {}),
+				},
+				body: body !== undefined ? JSON.stringify(body) : undefined,
+			})
+			const text = await res.text()
+			let json
+			try {
+				json = JSON.parse(text)
+			} catch {
+				json = { raw: text }
+			}
+			if (!res.ok) {
+				throw new Error(json.error || `${res.status} ${text.slice(0, 140)}`)
+			}
+			return json
+		}
+
+		async function load() {
+			try {
+				const [links, recent, stats, backups] = await Promise.all([
+					api('GET', '/api/links?limit=15'),
+					api('GET', '/api/recent?limit=12'),
+					api('GET', '/_turso/stats', undefined, true),
+					api('GET', '/_turso/backups', undefined, true),
+				])
+				const rows = links.data || []
+				$('#empty').hidden = rows.length > 0
+				$('#rows').innerHTML = rows.map((l) => {
+					const short = `${location.origin}/s/${l.code}`
+					return `
+			<tr>
+				<td><a class="short" href="/s/${esc(l.code)}" target="_blank"><code>${
+						esc(l.code)
+					}</code></a></td>
+				<td><a href="${esc(l.url)}" target="_blank" rel="noopener">${
+						esc(l.url)
+					}</a></td>
+				<td class="num">${l.hits}</td>
+				<td class="num">${esc(l.created_at)}</td>
+				<td class="row-actions"><button data-copy="${
+						esc(short)
+					}">copy</button></td>
+			</tr>`
+				}).join('')
+				$('#reqs').innerHTML = (recent.data || []).map((r) => `
+			<tr>
+				<td class="num">${esc(r.ts)}</td>
+				<td class="num">${esc(r.ip)}</td>
+				<td>${esc(r.method)}</td>
+				<td>${esc(r.path)}</td>
+				<td class="num">${r.status}</td>
+				<td class="num">${r.latency_ms}</td>
+			</tr>`).join('')
+				const parts = []
+				if (stats.last_backup) {
+					parts.push(
+						`last: ${stats.last_backup} (${fmtBytes(stats.last_backup_bytes)})`,
+					)
+				}
+				parts.push(
+					`count: ${stats.backup_count}`,
+					`errors: ${stats.backup_errors}`,
+				)
+				$('#bk-meta').textContent = parts.join(' · ')
+
+				const bks = backups.backups || []
+				$('#bk-empty').hidden = bks.length > 0
+				$('#bks').innerHTML = bks.map((b) => `
+			<tr>
+				<td><code>${esc(b.name)}</code></td>
+				<td class="num">${fmtBytes(b.bytes)}</td>
+				<td class="num">${esc(b.modified)}</td>
+				<td class="row-actions"><button data-restore="${
+					esc(b.name)
+				}">restore</button></td>
+			</tr>`).join('')
+				msg('')
+			} catch (e) {
+				msg(e.message, true)
+			}
+		}
+
+		const fmtBytes = (n) =>
+			n > 1048576
+				? (n / 1048576).toFixed(1) + ' MB'
+				: (n / 1024).toFixed(1) + ' KB'
+
+		$('#add').addEventListener('submit', async (ev) => {
+			ev.preventDefault()
+			try {
+				await api('POST', '/api/links', {
+					code: $('#f-code').value.trim(),
+					url: $('#f-url').value.trim(),
+				})
+				$('#f-code').value = ''
+				$('#f-url').value = ''
+				msg('created')
+				load()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		$('#bk-now').addEventListener('click', async () => {
+			try {
+				const r = await api('POST', '/_turso/backup', {}, true)
+				msg(`backup written: ${r.backup} (${fmtBytes(r.bytes)})`)
+				load()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		document.addEventListener('click', async (ev) => {
+			const rb = ev.target.closest('button[data-restore]')
+			if (rb) {
+				const name = rb.dataset.restore
+				if (
+					!confirm(
+						`Restore ${name}?\n\nThe current database will be replaced by this snapshot `
+							+ `(a safety backup of the current state is taken first).`,
+					)
+				) {
+					return
+				}
+				try {
+					const r = await api('POST', '/_turso/restore', { name }, true)
+					msg(
+						`restored ${r.restored}`
+							+ (r.safety_backup ? ` — safety backup: ${r.safety_backup}` : ''),
+					)
+					load()
+				} catch (e) {
+					msg(e.message, true)
+				}
+				return
+			}
+			const b = ev.target.closest('button[data-copy]')
+			if (!b) return
+			try {
+				await navigator.clipboard.writeText(b.dataset.copy)
+				msg(`copied ${b.dataset.copy}`)
+			} catch {
+				msg('clipboard blocked — copy manually', true)
+			}
+		})
+
+		load()
+		setInterval(load, 5000)
+		</script>
+	</body>
+</html>

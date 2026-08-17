@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang='en'>
+	<head>
+		<meta charset='utf-8'>
+		<meta name='viewport' content='width=device-width, initial-scale=1'>
+		<title>Edge notes — caddy-turso</title>
+		<style>
+		:root {
+			color-scheme: light dark;
+		}
+		body {
+			font: 15px/1.5 system-ui, sans-serif;
+			margin: 0 auto;
+			max-width: 860px;
+			padding: 1.5rem 1rem 4rem;
+		}
+		h1 {
+			font-size: 1.4rem;
+			margin: 0 0 0.25rem;
+		}
+		h1 span {
+			font-weight: 400;
+			opacity: 0.6;
+			font-size: 0.9rem;
+		}
+		h2 {
+			font-size: 1.05rem;
+			margin: 1.75rem 0 0.5rem;
+		}
+		form {
+			display: flex;
+			gap: 0.5rem;
+			margin: 0.75rem 0;
+		}
+		input, button {
+			font: inherit;
+			padding: 0.35rem 0.6rem;
+			border: 1px solid #8888;
+			border-radius: 6px;
+			background: transparent;
+			color: inherit;
+		}
+		#f-body {
+			flex: 1;
+		}
+		button {
+			cursor: pointer;
+		}
+		button:hover {
+			background: #8883;
+		}
+		.origin {
+			display: inline-block;
+			padding: 0.05rem 0.5rem;
+			border-radius: 99px;
+			font-size: 0.78rem;
+			border: 1px solid currentColor;
+			color: #4a7ecb;
+		}
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+		th, td {
+			text-align: left;
+			padding: 0.4rem 0.55rem;
+			border-bottom: 1px solid #8884;
+			vertical-align: top;
+		}
+		th {
+			font-size: 0.78rem;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			opacity: 0.7;
+		}
+		td.num {
+			font-variant-numeric: tabular-nums;
+			opacity: 0.8;
+		}
+		#syncbox {
+			display: flex;
+			gap: 1.25rem;
+			flex-wrap: wrap;
+			font-size: 0.9rem;
+			opacity: 0.85;
+			border: 1px solid #8884;
+			border-radius: 8px;
+			padding: 0.6rem 0.9rem;
+			margin-bottom: 0.5rem;
+		}
+		#syncbox b {
+			font-variant-numeric: tabular-nums;
+		}
+		#msg {
+			margin-top: 1rem;
+			font-size: 0.85rem;
+			opacity: 0.8;
+			min-height: 1.2em;
+		}
+		#msg.err {
+			color: #d06565;
+			opacity: 1;
+		}
+		.empty {
+			opacity: 0.6;
+			padding: 1rem 0;
+		}
+		</style>
+	</head>
+	<body>
+		<h1>Notes <span>— caddy-turso sync demo (edge replica)</span></h1>
+
+		<div id='syncbox'>
+			<div>last sync: <b id='sy-when'>never</b></div>
+			<div>result: <b id='sy-ok'>—</b></div>
+			<div>errors: <b id='sy-errs'>0</b></div>
+			<div>net: <b id='sy-net'>—</b></div>
+			<div>revision: <b id='sy-rev'>—</b></div>
+		</div>
+		<button id='sy-now'>Sync now (POST /_turso/sync)</button>
+
+		<h2>Leave a note</h2>
+		<form id='add'>
+			<input
+				id='f-body'
+				placeholder='note from the edge…'
+				required
+				maxlength='500'
+			>
+			<button>Post</button>
+		</form>
+
+		<table>
+			<thead>
+				<tr>
+					<th>#</th>
+					<th>body</th>
+					<th>origin</th>
+					<th>created</th>
+				</tr>
+			</thead>
+			<tbody id='rows'></tbody>
+		</table>
+		<div class='empty' id='empty' hidden>
+			no notes yet — the replica bootstraps from the remote on first run
+		</div>
+		<div id='msg'></div>
+
+		<script>
+		'use strict'
+		const $ = (s) => document.querySelector(s)
+		const esc = (s) =>
+			String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+		const TOKEN = 'change-me'
+
+		const msg = (t, err) => {
+			const m = $('#msg')
+			m.textContent = t
+			m.className = err ? 'err' : ''
+		}
+
+		async function api(method, url, body, auth) {
+			const res = await fetch(url, {
+				method,
+				headers: {
+					...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+					...(auth ? { Authorization: `Bearer ${TOKEN}` } : {}),
+				},
+				body: body !== undefined ? JSON.stringify(body) : undefined,
+			})
+			const text = await res.text()
+			let json
+			try {
+				json = JSON.parse(text)
+			} catch {
+				json = { raw: text }
+			}
+			if (!res.ok) {
+				throw new Error(json.error || `${res.status} ${text.slice(0, 140)}`)
+			}
+			return json
+		}
+
+		const fmtKB = (n) =>
+			n == null
+				? '—'
+				: n >= 1048576
+				? (n / 1048576).toFixed(1) + ' MB'
+				: (n / 1024).toFixed(1) + ' KB'
+
+		async function load() {
+			try {
+				const [notes, stats] = await Promise.all([
+					api('GET', '/api/notes?limit=30'),
+					api('GET', '/_turso/stats', undefined, true),
+				])
+				const rows = notes.data || []
+				$('#empty').hidden = rows.length > 0
+				$('#rows').innerHTML = rows.map((n) => `
+			<tr>
+				<td class="num">${n.id}</td>
+				<td>${esc(n.body)}</td>
+				<td><span class="origin">${esc(n.origin)}</span></td>
+				<td class="num">${esc(n.created_at)}</td>
+			</tr>`).join('')
+				$('#sy-when').textContent = stats.last_sync
+					? new Date(stats.last_sync).toLocaleTimeString()
+					: 'never'
+				$('#sy-ok').textContent = stats.last_sync_ok == null
+					? '—'
+					: (stats.last_sync_ok ? 'ok' : 'failed')
+				$('#sy-errs').textContent = stats.sync_errors ?? 0
+				const s = stats.sync
+				if (s) {
+					$('#sy-net').textContent = `↑${fmtKB(s.network_sent_bytes)} ↓${
+						fmtKB(s.network_received_bytes)
+					}`
+					$('#sy-rev').textContent = s.revision ?? '—'
+				}
+				msg('')
+			} catch (e) {
+				msg(e.message, true)
+			}
+		}
+
+		$('#add').addEventListener('submit', async (ev) => {
+			ev.preventDefault()
+			try {
+				await api('POST', '/api/notes', { body: $('#f-body').value.trim() })
+				$('#f-body').value = ''
+				msg('posted — it will reach the remote on the next sync')
+				load()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		$('#sy-now').addEventListener('click', async () => {
+			try {
+				await api('POST', '/_turso/sync', {}, true)
+				msg('synced')
+				load()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		load()
+		setInterval(load, 5000)
+		</script>
+	</body>
+</html>

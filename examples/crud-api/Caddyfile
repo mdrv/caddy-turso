@@ -1,0 +1,177 @@
+# Task manager REST API — full CRUD.
+#
+# Demonstrates: path/body/query params, type coercion + validation
+# (min/max/pattern), TTL result cache, per-route rate limits, CORS,
+# slow-query logging, request logging, and the management API.
+#
+# Run from this directory:
+#   ../../caddy-turso run --config Caddyfile --adapter caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+localhost:8080 {
+	route {
+		turso {
+			db_path tasks.db
+			open_timeout 30s
+			max_conns 8
+
+			pragma journal_mode WAL
+			pragma synchronous NORMAL
+
+			schema `
+				CREATE TABLE IF NOT EXISTS tasks (
+					id         INTEGER PRIMARY KEY,
+					title      TEXT NOT NULL,
+					status     TEXT NOT NULL DEFAULT 'todo',
+					created_at TEXT NOT NULL
+				)
+			`
+
+			# ---------- reads -------------------------------------------------
+
+			query list_tasks {
+				sql "SELECT id, title, status, created_at FROM tasks WHERE ($status = '' OR status = $status) ORDER BY id DESC LIMIT $limit OFFSET $offset"
+				param $status {
+					from query
+					key status
+					default ""
+				}
+				param $limit {
+					from query
+					key limit
+					type int
+					default 20
+					min 1
+					max 100
+				}
+				param $offset {
+					from query
+					key offset
+					type int
+					default 0
+					min 0
+				}
+				cache 2s
+				output {
+					envelope
+				}
+			}
+
+			query get_task {
+				sql "SELECT id, title, status, created_at FROM tasks WHERE id = $id"
+				param $id {
+					from path
+					key id
+					type int
+					min 1
+				}
+				output {
+					envelope
+				}
+			}
+
+			query task_stats {
+				sql "SELECT count(*) AS total, coalesce(sum(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done, coalesce(sum(CASE WHEN status = 'doing' THEN 1 ELSE 0 END), 0) AS doing FROM tasks"
+				cache 5s
+				output {
+					envelope
+				}
+			}
+
+			# ---------- writes ------------------------------------------------
+
+			query create_task {
+				sql "INSERT INTO tasks (title, status, created_at) VALUES ($title, $status, datetime('now')) RETURNING id, title, status, created_at"
+				param $title {
+					from body
+					key title
+				}
+				param $status {
+					from body
+					key status
+					default todo
+					pattern ^(todo|doing|done)$
+				}
+				output {
+					status 201
+					envelope
+				}
+			}
+
+			query update_task {
+				sql "UPDATE tasks SET title = COALESCE(NULLIF($title, ''), title), status = COALESCE(NULLIF($status, ''), status) WHERE id = $id RETURNING id, title, status, created_at"
+				param $id {
+					from path
+					key id
+					type int
+					min 1
+				}
+				param $title {
+					from body
+					key title
+					default ""
+				}
+				param $status {
+					from body
+					key status
+					default ""
+					pattern ^(todo|doing|done)$
+				}
+				output {
+					envelope
+				}
+			}
+
+			query delete_task {
+				sql "DELETE FROM tasks WHERE id = $id RETURNING id"
+				param $id {
+					from path
+					key id
+					type int
+					min 1
+				}
+				output {
+					envelope
+					body "no task with that id"
+				}
+			}
+
+			# ---------- routes ------------------------------------------------
+
+			route GET /api/tasks list_tasks {
+				rate_limit 60 per 1m
+			}
+			route GET /api/tasks/:id get_task
+			route GET /api/stats task_stats
+			route POST /api/tasks create_task {
+				rate_limit 10 per 1m
+			}
+			route PUT /api/tasks/:id update_task
+			route DELETE /api/tasks/:id delete_task
+
+			# ---------- ops ---------------------------------------------------
+
+			log_requests
+			exclude_path /_turso*
+			slow_query 100ms
+			max_rows 500
+			cors_origin *
+			api_token change-me
+		}
+
+		# the demo UI (only the exact root path; the db file is never served).
+		# try_files makes the page work whether caddy is started from this
+		# directory or from the repo root.
+		handle / {
+			root * .
+			try_files examples/crud-api/index.html index.html
+			file_server
+		}
+
+		respond "not found" 404
+	}
+}

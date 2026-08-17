@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang='en'>
+	<head>
+		<meta charset='utf-8'>
+		<meta name='viewport' content='width=device-width, initial-scale=1'>
+		<title>Traffic analytics — caddy-turso</title>
+		<style>
+		:root {
+			color-scheme: light dark;
+		}
+		body {
+			font: 15px/1.5 system-ui, sans-serif;
+			margin: 0 auto;
+			max-width: 920px;
+			padding: 1.5rem 1rem 4rem;
+		}
+		h1 {
+			font-size: 1.4rem;
+			margin: 0 0 0.25rem;
+		}
+		h1 span {
+			font-weight: 400;
+			opacity: 0.6;
+			font-size: 0.9rem;
+		}
+		h2 {
+			font-size: 1.05rem;
+			margin: 1.5rem 0 0.5rem;
+		}
+		.events {
+			display: flex;
+			gap: 0.5rem;
+			flex-wrap: wrap;
+			margin: 0.5rem 0 1rem;
+		}
+		input, button {
+			font: inherit;
+			padding: 0.35rem 0.6rem;
+			border: 1px solid #8888;
+			border-radius: 6px;
+			background: transparent;
+			color: inherit;
+		}
+		button {
+			cursor: pointer;
+		}
+		button:hover {
+			background: #8883;
+		}
+		label.toggle {
+			font-size: 0.88rem;
+			opacity: 0.8;
+			display: inline-flex;
+			gap: 0.4rem;
+			align-items: center;
+		}
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+		th, td {
+			text-align: left;
+			padding: 0.35rem 0.55rem;
+			border-bottom: 1px solid #8884;
+			vertical-align: top;
+		}
+		th {
+			font-size: 0.75rem;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			opacity: 0.7;
+		}
+		td.num {
+			font-variant-numeric: tabular-nums;
+			opacity: 0.85;
+		}
+		.kind {
+			display: inline-block;
+			padding: 0.02rem 0.5rem;
+			border-radius: 99px;
+			font-size: 0.78rem;
+			border: 1px solid currentColor;
+		}
+		.click {
+			color: #4a7ecb;
+		}
+		.view {
+			color: #43915c;
+		}
+		.error {
+			color: #d06565;
+		}
+		#enginestats {
+			display: flex;
+			gap: 1.25rem;
+			flex-wrap: wrap;
+			font-size: 0.88rem;
+			opacity: 0.85;
+			border: 1px solid #8884;
+			border-radius: 8px;
+			padding: 0.55rem 0.9rem;
+			margin-bottom: 1rem;
+		}
+		.bar {
+			height: 0.55em;
+			background: #6b9fd8;
+			border-radius: 3px;
+			display: inline-block;
+			vertical-align: middle;
+			min-width: 2px;
+		}
+		#msg {
+			margin-top: 1rem;
+			font-size: 0.85rem;
+			opacity: 0.8;
+			min-height: 1.2em;
+		}
+		#msg.err {
+			color: #d06565;
+			opacity: 1;
+		}
+		.empty {
+			opacity: 0.6;
+			padding: 0.75rem 0;
+		}
+		</style>
+	</head>
+	<body>
+		<h1>
+			Analytics <span>— caddy-turso request-logging demo (in-memory)</span>
+		</h1>
+
+		<div id='enginestats'>
+			<div>queries <b id='es-q'>–</b></div>
+			<div>cache hits <b id='es-ch'>–</b></div>
+			<div>slow <b id='es-sq'>–</b></div>
+			<div>log buffer <b id='es-lb'>–</b></div>
+			<div>dropped <b id='es-drop'>–</b></div>
+			<div>uptime <b id='es-up'>–</b>s</div>
+		</div>
+
+		<h2>Fire events</h2>
+		<div class='events'>
+			<button data-kind='click'>click</button>
+			<button data-kind='view'>view</button>
+			<button data-kind='error'>error</button>
+			<button id='burst'>burst ×25</button>
+			<label class='toggle'><input type='checkbox' id='auto' checked>
+				auto-refresh 3s</label>
+		</div>
+
+		<h2>
+			Top paths <span style='font-weight: 400; opacity: 0.6'>(_requests)</span>
+		</h2>
+		<table>
+			<thead>
+				<tr>
+					<th>path</th>
+					<th class='num'>hits</th>
+					<th class='num'>avg ms</th>
+					<th class='num'>max ms</th>
+					<th style='width: 30%'></th>
+				</tr>
+			</thead>
+			<tbody id='top'></tbody>
+		</table>
+		<div class='empty' id='top-empty' hidden>
+			nothing logged yet — fire an event or load the page again
+		</div>
+
+		<div style='display: flex; gap: 2rem; align-items: flex-start; flex-wrap: wrap'>
+			<div style='flex: 1; min-width: 22rem'>
+				<h2>Slowest requests</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>time</th>
+							<th>path</th>
+							<th class='num'>ms</th>
+							<th class='num'>status</th>
+						</tr>
+					</thead>
+					<tbody id='slow'></tbody>
+				</table>
+			</div>
+			<div style='flex: 1; min-width: 22rem'>
+				<h2>Recent events (events table)</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>kind</th>
+							<th>path</th>
+							<th>note</th>
+							<th class='num'>created</th>
+						</tr>
+					</thead>
+					<tbody id='evts'></tbody>
+				</table>
+			</div>
+		</div>
+		<div id='msg'></div>
+
+		<script>
+		'use strict'
+		const $ = (s) => document.querySelector(s)
+		const esc = (s) =>
+			String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+		const TOKEN = 'change-me'
+		const PATHS = [
+			'/',
+			'/pricing',
+			'/docs',
+			'/docs/quickstart',
+			'/api/tasks',
+			'/healthz',
+			'/missing-page',
+		]
+
+		const msg = (t, err) => {
+			const m = $('#msg')
+			m.textContent = t
+			m.className = err ? 'err' : ''
+		}
+
+		async function api(method, url, body, auth) {
+			const res = await fetch(url, {
+				method,
+				headers: {
+					...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+					...(auth ? { Authorization: `Bearer ${TOKEN}` } : {}),
+				},
+				body: body !== undefined ? JSON.stringify(body) : undefined,
+			})
+			const text = await res.text()
+			let json
+			try {
+				json = JSON.parse(text)
+			} catch {
+				json = { raw: text }
+			}
+			if (!res.ok) {
+				throw new Error(json.error || `${res.status} ${text.slice(0, 140)}`)
+			}
+			return json
+		}
+
+		const pick = () => PATHS[Math.floor(Math.random() * PATHS.length)]
+
+		async function fire(kind, path, note) {
+			await api('POST', '/e', { kind, path: path ?? pick(), note: note ?? '' })
+		}
+
+		async function load() {
+			try {
+				const [top, slow, evts, stats] = await Promise.all([
+					api('GET', '/stats/top?limit=10'),
+					api('GET', '/stats/slow?min_ms=0&limit=8'),
+					api('GET', '/events?limit=8'),
+					api('GET', '/_turso/stats', undefined, true),
+				])
+				const trows = top.data || []
+				$('#top-empty').hidden = trows.length > 0
+				const maxHits = Math.max(1, ...trows.map((r) => r.hits))
+				$('#top').innerHTML = trows.map((r) => `
+			<tr>
+				<td>${esc(r.path)}</td>
+				<td class="num">${r.hits}</td>
+				<td class="num">${r.avg_ms}</td>
+				<td class="num">${r.max_ms}</td>
+				<td><span class="bar" style="width:${
+					Math.round(r.hits / maxHits * 100)
+				}%"></span></td>
+			</tr>`).join('')
+				$('#slow').innerHTML = (slow.data || []).map((r) => `
+			<tr>
+				<td class="num">${esc(r.ts)}</td>
+				<td>${esc(r.path)}</td>
+				<td class="num">${r.latency_ms}</td>
+				<td class="num">${r.status}</td>
+			</tr>`).join('')
+				$('#evts').innerHTML = (evts.data || []).map((e) => `
+			<tr>
+				<td><span class="kind ${e.kind}">${e.kind}</span></td>
+				<td>${esc(e.path)}</td>
+				<td>${esc(e.note)}</td>
+				<td class="num">${esc(e.created_at)}</td>
+			</tr>`).join('')
+				const lb = stats.log_buffer || {}
+				$('#es-q').textContent = stats.queries
+				$('#es-ch').textContent = stats.cache_hits
+				$('#es-sq').textContent = stats.slow_queries
+				$('#es-lb').textContent = lb.depth
+				$('#es-drop').textContent = lb.dropped
+				$('#es-up').textContent = stats.uptime_s
+				msg('')
+			} catch (e) {
+				msg(e.message, true)
+			}
+		}
+
+		document.querySelector('.events').addEventListener('click', async (ev) => {
+			const burst = ev.target.closest('#burst')
+			if (burst) {
+				await Promise.allSettled(Array.from({ length: 25 }, () => fire()))
+				load()
+				return
+			}
+			const b = ev.target.closest('button[data-kind]')
+			if (!b) return
+			try {
+				await fire(b.dataset.kind)
+				load()
+			} catch (e) {
+				msg(e.message, true)
+			}
+		})
+
+		setInterval(() => {
+			if ($('#auto').checked) load()
+		}, 3000)
+		load()
+		</script>
+	</body>
+</html>

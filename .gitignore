@@ -1,0 +1,24 @@
+# databases & engine artifacts
+*.db
+*.db-*
+*.sqlite*
+*.restore-tmp
+
+# backup snapshots created when running from repo root / example dir
+/backups/
+/examples/backups/backups/
+
+# build output
+caddy-turso
+caddy
+dist/
+*.test
+*.out
+
+# local env
+.env
+.env.*
+
+# logs & os junk
+*.log
+.DS_Store

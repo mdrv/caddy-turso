@@ -1,0 +1,124 @@
+# URL shortener with automatic backups and WAL checkpointing.
+#
+# Demonstrates: backup_dir / backup_interval / backup_retain, on-demand
+# POST /_turso/backup, text output format, request logging with tuned
+# writer knobs, and querying the _requests table through a normal route.
+#
+# Run from this directory:
+#   ../../caddy-turso run --config Caddyfile --adapter caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+localhost:8080 {
+	route {
+		turso {
+			db_path links.db
+			checkpoint 10m
+
+			# consistent VACUUM INTO snapshots every hour, keep the newest 24
+			backup_dir ./backups
+			backup_interval 1h
+			backup_retain 24
+
+			schema `
+				CREATE TABLE IF NOT EXISTS links (
+					code       TEXT PRIMARY KEY,
+					url        TEXT NOT NULL,
+					hits       INTEGER NOT NULL DEFAULT 0,
+					created_at TEXT NOT NULL
+				)
+			`
+
+			query create_link {
+				sql "INSERT INTO links (code, url, created_at) VALUES ($code, $url, datetime('now')) RETURNING code, url, created_at"
+				param $code {
+					from body
+					key code
+					pattern ^[a-z0-9_-]{3,32}$
+				}
+				param $url {
+					from body
+					key url
+					pattern "^https?://.+$"
+				}
+				output {
+					status 201
+					envelope
+				}
+			}
+
+			# increments the hit counter and returns the raw URL as text
+			query visit {
+				sql "UPDATE links SET hits = hits + 1 WHERE code = $code RETURNING url"
+				param $code {
+					from path
+					key code
+				}
+				output {
+					format text
+					body "no such link"
+				}
+			}
+
+			query link_stats {
+				sql "SELECT code, url, hits FROM links ORDER BY hits DESC LIMIT $limit"
+				param $limit {
+					from query
+					key limit
+					type int
+					default 10
+					min 1
+					max 100
+				}
+				output {
+					envelope
+				}
+			}
+
+			# the built-in request log, exposed as an ordinary route
+			query recent_requests {
+				sql "SELECT ts, ip, method, path, status, latency_ms FROM _requests ORDER BY id DESC LIMIT $limit"
+				param $limit {
+					from query
+					key limit
+					type int
+					default 20
+					min 1
+					max 100
+				}
+				output {
+					envelope
+				}
+			}
+
+			route POST /api/links create_link
+			route GET /s/:code visit
+			route GET /api/links link_stats
+			route GET /api/recent recent_requests
+
+			# async request logging: batched inserts, bounded buffer
+			log_requests
+			exclude_path /_turso*
+			batch_size 100
+			flush_interval 1s
+			buffer_size 4096
+			overflow drop
+
+			api_token change-me
+		}
+
+		# the demo UI (only the exact root path; db/backups are never served).
+		# try_files makes the page work whether caddy is started from this
+		# directory or from the repo root.
+		handle / {
+			root * .
+			try_files examples/backups/index.html index.html
+			file_server
+		}
+
+		respond "not found" 404
+	}
+}
