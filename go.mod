@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	go.uber.org/zap v1.28.0
-	turso.tech/database/tursogo v0.7.2
+	turso.tech/database/tursogo v0.8.1
 )
 
 require (
@@ -111,7 +111,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
 	github.com/tailscale/tscert v0.0.0-20251216020129-aea342f6d747 // indirect
-	github.com/tursodatabase/turso-go-platform-libs v0.7.2 // indirect
+	github.com/tursodatabase/turso-go-platform-libs v0.8.1 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
